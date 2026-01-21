@@ -123,6 +123,7 @@ configs:
     content: |
       container:
         network: labspace
+        options: -v /var/run/docker.sock:/var/run/docker.sock
 
   gitea-bootstrap:
     content: |
