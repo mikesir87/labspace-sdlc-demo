@@ -1,6 +1,6 @@
 metadata:
-  id: ${REPO_OWNER}/${REPO_NAME}
-  sourceRepo: github.com/${REPO_OWNER}/${REPO_NAME}
+  id: mikesir87/labspace-sdlc-demo
+  sourceRepo: github.com/mikesir87/labspace-sdlc-demo
   contentVersion: abcd123 # Will be filled in during CI
 
 title: Labspace starter
