@@ -1,0 +1,189 @@
+services:
+  traefik:
+    image: traefik:3.6.5
+    command:
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.ssh.address=:22
+    ports:
+      - "22:22"
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      default:
+
+        # By adding these aliases, DNS will be MITMed to not resolve locally to each container,
+        # but to Traefik, which will route the traffic back to the correct container based on Host rules.
+        aliases:
+          - git.dockerlab.me
+
+  workspace:
+    volumes:
+      - gitea-outputs:/gitea-outputs:ro
+    configs:
+      - source: workspace-git-setup
+        target: /entrypoint.d/git-setup.sh
+        mode: 0755
+    depends_on:
+      git:
+        condition: service_healthy
+
+  git:
+    image: gitea/gitea:1.25.3
+    volumes:
+      - gitea-data:/data
+      - gitea-outputs:/gitea-outputs
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "2222:2222"
+    environment:
+      GITEA__server__ROOT_URL: http://git.dockerlab.me/
+      GITEA__server__SSH_DOMAIN: git.dockerlab.me
+      GITEA__server__SSH_LISTEN_PORT: 22
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__security__INSTALL_LOCK: "true"
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.git.rule: Host(`git.dockerlab.me`)
+      traefik.http.routers.git.entrypoints: web
+      traefik.http.routers.git.service: git
+      traefik.http.services.git.loadbalancer.server.port: "3000"
+      traefik.tcp.routers.git-ssh.rule: HostSNI(`*`)
+      traefik.tcp.routers.git-ssh.entrypoints: ssh
+      traefik.tcp.routers.git-ssh.service: git-ssh
+      traefik.tcp.services.git-ssh.loadbalancer.server.port: "22"
+    configs:
+      - source: gitea-bootstrap
+        target: /etc/gitea/bootstrap.sh
+        mode: 0755
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/healthz"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    post_start:
+      - command: bash /etc/gitea/bootstrap.sh
+        user: root
+
+  gitea-runner:
+    image: gitea/act_runner:0.2.13
+    entrypoint: []
+    command: bash -c "GITEA_RUNNER_REGISTRATION_TOKEN=$(cat /gitea-outputs/runner_token.txt) /sbin/tini -- run.sh"
+    depends_on:
+      git:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - gitea-outputs:/gitea-outputs
+    configs:
+      - source: gitea-runner-config
+        target: /etc/act-runner/config.yml
+    environment:
+      GITEA_INSTANCE_URL: http://git.dockerlab.me
+      GITEA_RUNNER_NAME: labspace-runner
+      GITEA_RUNNER_EPHEMERAL: 1
+      CONFIG_FILE: /etc/act-runner/config.yml
+      
+
+volumes:
+  gitea-data:
+  gitea-outputs:
+
+configs:
+  workspace-git-setup:
+    content: |
+      #!/bin/bash
+
+      sudo mkdir -p /home/coder/.ssh
+      sudo cp /gitea-outputs/moby_id_rsa /home/coder/.ssh/id_rsa 
+      sudo cp /gitea-outputs/moby_id_rsa.pub /home/coder/.ssh/id_rsa.pub
+      sudo chown -R coder:coder /home/coder/.ssh
+
+      ssh-keyscan -H git.dockerlab.me >> /home/coder/.ssh/known_hosts
+      git config --global init.defaultBranch main
+      git config --global user.name 'Moby'
+      git config --global user.email 'moby@local'
+      
+      cd /home/coder/project
+      echo ".labspace" >> .gitignore
+      echo "labspace.yaml" >> .gitignore
+      rm -rf .git
+      git init
+      git remote add origin git@git.dockerlab.me:moby/demo-app.git
+      git add -A
+      git commit -m 'Initial commit'
+      git push -u origin main
+
+  gitea-runner-config:
+    content: |
+      container:
+        network: labspace
+
+  gitea-bootstrap:
+    content: |
+      #!/bin/bash
+
+      echo "Running"
+      while ! curl -sL http://localhost:3000/user/login > /dev/null; do
+        sleep 2
+      done
+      echo "Gitea is up - proceeding with bootstrap"
+
+      # Create the 'moby' user if it doesn't exist
+      users=$(su-exec git /usr/local/bin/gitea admin user list)
+      if echo "$$users" | grep -q '^moby '; then
+          echo "User 'moby' already exists. Skipping account creation."
+      else
+          su-exec git /usr/local/bin/gitea admin user create --username moby --password 'moby1234!' --email admin@local --admin --must-change-password=false
+
+          # Need to wait a bit for the user to be fully created before proceeding
+          sleep 5
+      fi
+      
+      # Check if demo-app repo exists. Create it if it doesn't.
+      repo_status=$(curl -s -o /dev/null -w "%{http_code}" http://git.dockerlab.me/api/v1/repos/moby/demo-app)
+      if [ "$$repo_status" = "404" ]; then
+          echo "Repository 'moby/demo-app' not found. Creating it..."
+          curl -s -H "Content-type: application/json" -u 'moby:moby1234!' -d '{"name":"demo-app","private":false}' http://git.dockerlab.me/api/v1/user/repos
+          echo "Repository 'moby/demo-app' created."
+      else
+          echo "Repository 'moby/demo-app' already exists. Skipping creation."
+      fi
+
+      # Create CI secrets if they don't exist
+      SECRETS_JSON=$(curl -s -u 'moby:moby1234!' http://git.dockerlab.me/api/v1/repos/moby/demo-app/actions/secrets)
+      if echo "$$keys" | grep -q "DOCKER_USERNAME"; then
+        echo "CI secrets already exist. Skipping secret creation."
+      else
+        curl -s -u 'moby:moby1234!' http://git.dockerlab.me/api/v1/repos/moby/demo-app/actions/secrets -H "Content-Type: application/json" -d '{"name":"DOCKER_USERNAME","value":"moby"}'
+        curl -s -u 'moby:moby1234!' http://git.dockerlab.me/api/v1/repos/moby/demo-app/actions/secrets -H "Content-Type: application/json" -d '{"name":"DOCKER_PASSWORD","value":"moby1234!"}'
+        curl -s -u 'moby:moby1234!' http://git.dockerlab.me/api/v1/repos/moby/demo-app/actions/secrets -H "Content-Type: application/json" -d '{"name":"DOCKER_REGISTRY","value":"git.dockerlab.me"}'
+        echo "CI secrets created."
+      fi
+
+      # Get and store registration token for the runner
+      TOKEN_JSON=$(curl -s -u 'moby:moby1234!' http://git.dockerlab.me/api/v1/repos/moby/demo-app/actions/runners/registration-token)
+      REGISTRATION_TOKEN=$(echo $$TOKEN_JSON | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+      echo -n $$REGISTRATION_TOKEN > /gitea-outputs/runner_token.txt
+
+      # Create SSH key for user 'moby' if it doesn't exist
+      if [ ! -f /gitea-outputs/moby_id_rsa ]; then
+          ssh-keygen -t rsa -b 4096 -N "" -f /gitea-outputs/moby_id_rsa
+          echo "SSH key generated for user 'moby'."
+      fi
+
+      # Add the public key to the user's SSH keys via Gitea API if not already added
+      keys=$(curl -s -u 'moby:moby1234!' http://git.dockerlab.me/api/v1/user/keys)
+      if echo "$$keys" | grep -q "moby-key"; then
+          echo "SSH key already added to user 'moby'. Skipping key addition."
+      else
+        pub_key=$(cat /gitea-outputs/moby_id_rsa.pub)
+        curl -s -u 'moby:moby1234!' http://git.dockerlab.me/api/v1/user/keys -H "Content-Type: application/json" -d "{\"title\":\"moby-key\",\"key\":\"$$pub_key\"}"
+        echo "SSH key added to user 'moby'."
+      fi
