@@ -79,15 +79,12 @@ services:
       git:
         condition: service_healthy
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - socket-proxy:/var/run/
       - gitea-outputs:/gitea-outputs
-    configs:
-      - source: gitea-runner-config
-        target: /etc/act-runner/config.yml
     environment:
       GITEA_INSTANCE_URL: http://git.dockerlab.me
       GITEA_RUNNER_NAME: labspace-runner
-      CONFIG_FILE: /etc/act-runner/config.yml
+      # CONFIG_FILE: /etc/act-runner/config.yml
       
 
 volumes:
@@ -118,11 +115,6 @@ configs:
       git add -A
       git commit -m 'Initial commit'
       git push -u origin main
-
-  gitea-runner-config:
-    content: |
-      container:
-        network: labspace
 
   gitea-bootstrap:
     content: |
