@@ -87,7 +87,6 @@ services:
     environment:
       GITEA_INSTANCE_URL: http://git.dockerlab.me
       GITEA_RUNNER_NAME: labspace-runner
-      GITEA_RUNNER_EPHEMERAL: 1
       CONFIG_FILE: /etc/act-runner/config.yml
       
 
@@ -161,9 +160,9 @@ configs:
       if echo "$$keys" | grep -q "DOCKER_USERNAME"; then
         echo "CI secrets already exist. Skipping secret creation."
       else
-        curl -s -u 'moby:moby1234!' http://git.dockerlab.me/api/v1/repos/moby/demo-app/actions/secrets -H "Content-Type: application/json" -d '{"name":"DOCKER_USERNAME","value":"moby"}'
-        curl -s -u 'moby:moby1234!' http://git.dockerlab.me/api/v1/repos/moby/demo-app/actions/secrets -H "Content-Type: application/json" -d '{"name":"DOCKER_PASSWORD","value":"moby1234!"}'
-        curl -s -u 'moby:moby1234!' http://git.dockerlab.me/api/v1/repos/moby/demo-app/actions/secrets -H "Content-Type: application/json" -d '{"name":"DOCKER_REGISTRY","value":"git.dockerlab.me"}'
+        curl -s -u 'moby:moby1234!' -X PUT http://git.dockerlab.me/api/v1/repos/moby/demo-app/actions/secrets/DOCKER_USERNAME -H "Content-Type: application/json" -d '{"data":"moby"}'
+        curl -s -u 'moby:moby1234!' -X PUT http://git.dockerlab.me/api/v1/repos/moby/demo-app/actions/secrets/DOCKER_PASSWORD -H "Content-Type: application/json" -d '{"data":"moby1234!"}'
+        curl -s -u 'moby:moby1234!' -X PUT http://git.dockerlab.me/api/v1/repos/moby/demo-app/actions/secrets/DOCKER_REGISTRY -H "Content-Type: application/json" -d '{"data":"git.dockerlab.me"}'
         echo "CI secrets created."
       fi
 
@@ -187,3 +186,4 @@ configs:
         curl -s -u 'moby:moby1234!' http://git.dockerlab.me/api/v1/user/keys -H "Content-Type: application/json" -d "{\"title\":\"moby-key\",\"key\":\"$$pub_key\"}"
         echo "SSH key added to user 'moby'."
       fi
+
